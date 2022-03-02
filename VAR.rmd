@@ -1,0 +1,274 @@
+---
+title: "Model VAR"
+author: "Piotr Kryk"
+
+---
+
+### Wstep
+
+Celem niniejszego projektu było zbadanie zależności, zachodzących między rynkami (obrazowanymi przez giełdy) krajów takich jak:  
+- Polska (WIG)  
+- Francja (CAC 40)  
+- Włochy (FTSE MIB)  
+- Norwegia (OSE)  
+- Hiszpania (IBEX)  
+  
+Zbudowano w tym celu model VAR, tóry jest  wielorównaniowym liniowym modelem o strukturze autoregresyjnej. Model ten wykorzystywany jest do analizy zmiennych stacjonarnych. 
+Postać modelu VAR można przedstawić za pomocą równania:
+   
+$$Y_{t} = A_{0}D{t} + \sum_{i=1}^{p}A_{i}Y_{t-i}+ \varepsilon_{t}$$
+
+gdzie:  
+- $Y_{t}$ to macierz obserwacji dla K-zmiennych objaśnianych (K – jest jednocześnie  liczbą  równań  w modelu VAR)  
+- $t$ to numer obserwacji (t = 1,2,...,T)  
+- $Y_{t-p}$ jest macierzą obserwacji dla K-zmiennych objaśniających opóźnionych w stosunku do zmiennej objaśnianej o $p$ okresów  
+- $D_{t}$ to macierz obserwacji dla deterministycznych składników równania, takich jak: wyraz wolny, zmienna czasowa, zmienne zero-jedynkowe  
+- $A_{i}$ to macierz parametrów (dla i = 0, 1,..,p)  
+- $\varepsilon_{t}$ – wektor stacjonarnych zakłóceń losowych  
+  
+Model VAR, nie posiada podziału na zmienne egzogeniczne oraz endogeniczne. Dzieje się tak, gdyż każda zmienna uwzględniona w modelu ma wpływ na pozostałe, a proces modelowania dotyczy każdej z nich. Z jego pomocą możemy analizować zjawiska takie jak:  
+- badanie przyczynowości zjawisk  
+- analizę odpowiedzi na impulsy  
+- modelowanie zależności pomiędzy zmiennymi   
+- prognozowanie zjawisk dynamicznych i finansowych 
+
+## Dane
+Dane użyte w projekcie to wartości dziennych głównych indeksów giełdowych pięciu wymienionych wcześniej krajów. Zakres dat ustalono między 3 marca 2009 roku a 26 listopada 2021 roku. 
+Z uwagi na różne waluty na giełdach pobrano również kursy poszczególnych walut, celem wyrażenia  wszystkich indeksów giełdowych w euro.
+
+```{r}
+wig <- read.csv("~/Desktop/VAR2/wig.csv") #Polska - PLN 
+cac <- read.csv("~/Desktop/VAR2/cac.csv") #Francja - EUR
+fmib <- read.csv("~/Desktop/VAR2/fmib.csv") #Włochy - EUR
+ose <- read.csv("~/Desktop/VAR2/ose.csv") #Norwegia - NOK
+ibex <- read.csv("~/Desktop/VAR2/ibex.csv") #Hiszpania - EUR
+
+plneur <- read.csv("~/Desktop/VAR2/plneur.csv")
+nokeur <- read.csv("~/Desktop/VAR2/nokeur.csv")
+```
+
+Następnie stworzono nową ramkę danych korzystając z funkcji inner_join(), dzięki której pobrano wyłacznie daty, w których opublikowano notowania każdego z badanych indeksów giełdowych. Z danych wyciągnięto jedynie kolumnę z datą oraz wartościami zamknięć w poszczególnych dniach, ponieważ to one będą stanowiły podstawę do dalszej analizy.
+
+```{r, echo=FALSE,message=FALSE}
+library(dplyr)
+```
+
+```{r}
+dates <- data.frame(matrix(NA, ncol=8))
+
+dates <- inner_join(wig,cac,by="Data")[,c(1,5,10)]
+dates <- inner_join(dates,fmib,by="Data")[,c(1,2,3,7)]
+dates <- inner_join(dates,ose,by="Data")[,c(1,2,3,4,8)]
+dates <- inner_join(dates,ibex,by="Data")[,c(1,2,3,4,5,9)]
+
+dates <- inner_join(dates,plneur,by="Data")[,c(1,2,3,4,5,6,10)]
+dates <- inner_join(dates,nokeur,by="Data")[,c(1,2,3,4,5,6,7,11)]
+
+colnames(dates) <- c("Data","wig","cac","fmib","ose","ibex","plneur","nokeur")
+```
+
+W następnym kroku indeks giełdowy Polski i Norwegii wyrażono w euro.
+
+```{r}
+dates$wig <- dates$wig*dates$plneur
+dates$ose <- dates$ose*dates$nokeur
+```
+
+## Logarytmiczne stopy zwrotu
+W kolejnym etapie obliczono logarytmiczne stopy zwrotu z indeksów giełdowych według wzoru:
+
+$$r_{t} = \log(\frac{P_{t}}{P_{t-1}})$$
+ 
+gdzie:  
+- $r_{t}$ to stopa zwrotu w danym okresie  
+- $P_{t}$ to wartość zamknięcia w tym samym okresie  
+- $P_{t-1}$ to wartość zamknięcia w okresie poprzednim
+
+```{r}
+data <- dates[,1:6]
+
+returnrates <- data.frame(data[-1,1])
+for (j in 2:ncol(data)){
+  x <- c()
+  for (i in 2:nrow(data)){
+    x[i-1] <- log(data[i,j])/(data[i-1,j])
+  }
+  returnrates <- cbind(returnrates,x)
+}
+colnames(returnrates) <- colnames(data)
+```
+
+Finalnie skonstruowano ramkę danych, zawierającą daty oraz logarytmiczne stopy zwrotu z wszystkich badanych indeksów giełdowych wyrażonych w euro. Przedstawiono fragment ramki danych, która stanowić będzie przedmiot dalszej analizy:
+
+```{r}
+returnrates[1:10,]
+```
+
+## Stacjonarność
+Kolejny etap analizy stanowi badanie stacjonarności szeregów czasowych. Najbardziej powszechnym testem, za pomocą którego można zbadać stacjonarność jest test ADF, którego hipotezy mają postać:
+
+<center>H~0~ : Szereg jest niestacjonarny</center>
+<center>H~1~ : Szereg jest stacjonarny</center>
+<br>
+Test ADF przeprowadzono na trzech typach modeli: <br>
+- model liniowy bez wyrazu wolnego oraz bez trendu,<br>
+- model liniowy z wyrazem wolnym, ale bez trendu,<br>
+- model liniowy z wyrazem wolnym i trendem.<br>
+
+Następnie sprawdzono, czy istnieje wyniki, dla których p-value jest poniżej poziomu istotności - 5%.
+```{r, echo=FALSE,message=FALSE}
+library(aTSA)
+```
+
+```{r, echo=TRUE,results='hide'}
+adf_wig <- adf.test(returnrates$wig,nlag=5)
+adf_cac <- adf.test(returnrates$cac,nlag=5)
+adf_fmib <- adf.test(returnrates$fmib,nlag=5)
+adf_ose <- adf.test(returnrates$ose,nlag=5)
+adf_ibex <- adf.test(returnrates$ibex,nlag=5)
+```
+```{r, echo=FALSE}
+adf_wig$type1[,3] || adf_wig$type2[,3] || adf_wig$type3[,3]  < 0.05
+adf_cac$type1[,3] || adf_cac$type2[,3] || adf_cac$type3[,3]  < 0.05
+adf_fmib$type1[,3] || adf_fmib$type2[,3] || adf_fmib$type3[,3]  < 0.05
+adf_ose$type1[,3] || adf_ose$type2[,3] || adf_ose$type3[,3]  < 0.05
+adf_ibex$type1[,3] || adf_ibex$type2[,3] || adf_ibex$type3[,3]  < 0.05
+```
+
+W przypaku każdego szeregu czasowego istnieje wartość p-value poniżej 5%, więc można odrzucić hipoteze zerową zakładającą niestacjonarność. Uzyskano zatem podstawy do stwierdzenia, że badane szeregi czasowe są procesami stacjonarnymi.
+
+## Budowa i weryfikacja modelu VAR
+```{r, echo=FALSE,message=FALSE}
+returnrates <- returnrates[,-1]
+library(vars)
+```
+Do zbudowanie modelu VAR niezbędny jest wybór odpowiedniego opóźnienia. Zbyt małe opóźnienie może powodować autokorelację reszt modelu, a zbyt duże opóźnienie może znacznie komplikować model, który na skutek dużej liczby zmiennych będzie tracił liczbę stopni swobody. Skorzystano więc z funkcji varSELECT(), która oblicza kryteria informacyjne, na podstawie których dobierany jest optymalny rząd opóźnienia modelu:  
+- kryterium informacyjnym Akaike'a **AIC**  
+- kryterium Hannana-Quinna **HQ**  
+- kryterium Schwartza **SC**  
+- kryterium **FPE**
+
+```{r}
+lags <- VARselect(returnrates,lag.max=5)
+lags <- lags$criteria
+
+lags <- data.frame(which.min(lags[1,]),which.min(lags[2,]),which.min(lags[3,]),which.min(lags[4,]))
+colnames(lags) <- c("AIC","HQ","SC","FPE")
+rownames(lags) <- "Lag"
+lags
+```
+
+Dwa spośród kryteriów wskazują na opóźnienia rzędu 2, a pozostałe dwa na opóźnienia rzędu 5. Zbudowano więc oba modele, aby w dalszej częsci projektu zdecydować, który lepiej będzie opisywał badane zjawisko.
+
+
+```{r}
+model1 <- VAR(returnrates,p=2)
+model2 <- VAR(returnrates,p=5)
+```
+
+W następnym kroku oba modele poddano weryfikacji statystycznej i sprawdzono występowanie zjawiska autokorelacji reszt każdego równania modelu za pomocą korelogramu przedstawiającego wartości funkcji autokorelacji ACF, analizując wpływ informacji od okresu 10 dni na wartości bieżące.<br>
+
+Korelogramy dla reszt równań modelu z opóźnieniami rzędu 2:
+
+```{r, echo=FALSE}
+library(corrgram)
+```
+```{r,eval=FALSE}
+residuals1 <- resid(model1)
+
+correlogram_wig <- acf(residuals1[,1])
+correlogram_cac <- acf(residuals1[,2])
+correlogram_fmib <- acf(residuals1[,3])
+correlogram_ose <- acf(residuals1[,4])
+correlogram_ibex <- acf(residuals1[,5])
+```
+```{r,include=FALSE}
+residuals1 <- resid(model1)
+
+correlogram_wig <- acf(residuals1[,1])
+correlogram_cac <- acf(residuals1[,2])
+correlogram_fmib <- acf(residuals1[,3])
+correlogram_ose <- acf(residuals1[,4])
+correlogram_ibex <- acf(residuals1[,5])
+```
+```{r}
+plot(correlogram_wig[1:10],ci=0.99, main="Korelogram dla reszt równania I - (wig)") 
+plot(correlogram_cac[1:10],ci=0.99, main="Korelogram dla reszt równania II - (cac)") 
+plot(correlogram_fmib[1:10],ci=0.99, main="Korelogram dla reszt równania III - (fmib)") 
+plot(correlogram_ose[1:10],ci=0.99, main="Korelogram dla reszt równania IV - (ose)") 
+plot(correlogram_ibex[1:10],ci=0.99, main="Korelogram dla reszt równania V - (ibex)") 
+```
+
+Z powyższych korelogramów wynika istnienie zjawiska autokorelacji dla:<br>
+- reszt równanie I (autokorelacja rzędu 3, 7 i 9);<br>
+- reszt równanie II (autokorelacja rzędu 3);<br>
+- reszt równanie III (autokorelacja rzędu 4);<br>
+- reszt równanie V (autokorelacja rzędu 4 i 7).<br>
+
+Z przeprowadzonej weryfikacji modelu z opoźnieniami rzędu 2 wyniknęło istnienie silnej
+autokorelacji, co jest zjawiskiem niepożądanym, ponieważ może sztucznie zawyżać wartości niektórych statystyk. <br>
+
+Następnie w sposób analogiczny przeprowadzono weryfikacje dla modelu z opóźnienia rzędu 5.
+
+```{r,include=FALSE}
+residuals2 <- resid(model2)
+
+correlogram_wig <- acf(residuals2[,1])
+correlogram_cac <- acf(residuals2[,2])
+correlogram_fmib <- acf(residuals2[,3])
+correlogram_ose <- acf(residuals2[,4])
+correlogram_ibex <- acf(residuals2[,5])
+```
+```{r, echo=FALSE}
+plot(correlogram_wig[1:10],ci=0.99, main="Korelogram dla reszt równania I - (wig)") 
+plot(correlogram_cac[1:10],ci=0.99, main="Korelogram dla reszt równania II - (cac)") 
+plot(correlogram_fmib[1:10],ci=0.99, main="Korelogram dla reszt równania III - (fmib)") 
+plot(correlogram_ose[1:10],ci=0.99, main="Korelogram dla reszt równania IV - (ose)") 
+plot(correlogram_ibex[1:10],ci=0.99, main="Korelogram dla reszt równania V - (ibex)") 
+```
+
+Zdecydowanie lepiej wypada model z opoznieniami rzedu 5, jednak wystepuje autokorelacja reszt rownania
+pierwszego rzędu 9. Jest to jednak bardzo niewielka wartość, zatem uznano ten model za poprawny i będzie on stanowił przedmiot dalszej analizy.
+
+## Interpretacja modelu
+```{r}
+summary(model2)
+```
+1. W modelu objaśniającym wartości stóp zwrotu indeksu WIG na wynik istotnie wpływa wartość opóźnienia rzędu 2 stopy zwrotu indeksu giełdowego OSE oraz wartość opóźnienia rzędu 1 i 2 stóp zwrotu z indeksu giełdowego WIG. 
+
+2. W modelu objaśniającym wartości stóp zwrotu indeksu CAC 40 na wynik istotnie wpływa wartość opóźnienia rzędu 4 stóp zwrotu indeksu giełdowego WIG, wartość opóźnienia rzędu 1 i 2 stóp zwrotu indeksu giełdowego CAC, wartość opóźnienia rzędu 2 3 2 stóp zwrotu indeksu giełdowego OSE oraz wartość opóźnienia rzędu 5 stóp zwrotu indeksu giełdowego FTSE MIB. 
+
+3. W modelu objaśniającym wartości stóp zwrotu indeksu FTSE MIB na wynik istotnie wpływa wartość opóźnienia rzędu 1 i 2 stóp zwrotu indeksu giełdowego FTSE MIB, wartość opóźnienia rzędu 3 i 4 stóp zwrotu indeksu giełdowego CAC oraz wartość opóźnienia rzędu 3 stóp zwrotu indeksu giełdowego OSE. 
+
+4. W modelu objaśniającym wartości stóp zwrotu indeksu OSE na wynik istotnie wpływa wartość opóźnienia rzędu 1, 2 i 3 stóp zwrotu indeksu giełdowego OSE  oraz wartość opóźnienia rzędu 3 i 4 stóp zwrotu indeksu giełdowego WIG. 
+
+5. W modelu objaśniającym wartości stóp zwrotu indeksu IBEX na wynik istotnie wpływa wartość opóźnienia rzędu 1, 2 i 3 stóp zwrotu indeksu giełdowego IBEX oraz wartość opóźnienia rzędu 2, 3 i 4 stóp zwrotu indeksu giełdowego OSE.
+
+## Przyczynowość w sensie Grangera
+Definicją przyczynowości możemy nazwać sentencję, że X powoduje Y wtedy i tylko wtedy, gdy włączenie do modelu przewidującego zmienną objaśnianą Y wartości zmiennej objaśniającej X zwiększa trafność predykcji. Oznacza to że można dzięki niej lepiej przewidzieć zachowanie zmiennej objaśnianej. Aby zbadać przyczynowość w projekcie, posłużono się funkcją causality(), która bada łączną istotność opóźnień wartości stóp zwrotu z jednej giełdy we wszystkich estymowanych równaniach. Bazuje ona na teście o następujących hipotezach:
+
+<center>H~0~ : Badana zmienna nie jest przyczyną w sensie Grangera</center>
+<center>H~1~ : Badana zmienna jest przyczyną w sensie Grangera</center>
+<br>
+```{r, echo=FALSE}
+library(lmtest)
+```
+```{r,echo=TRUE,results='hide'}
+granger1 <- causality(model2, cause="wig")$Granger
+granger2 <- causality(model2, cause="cac")$Granger
+granger3 <- causality(model2, cause="fmib")$Granger
+granger4 <- causality(model2, cause="ose")$Granger
+granger5 <- causality(model2, cause="ibex")$Granger
+```
+```{r, echo=FALSE}
+granger <- data.frame(granger1$p.value,granger2$p.value,granger3$p.value,granger4$p.value,granger5$p.value)
+colnames(granger) <- c("wig","cac","fmib","ose","ibex")
+rownames(granger) <- "p-value"
+```
+```{r}
+granger<0.05
+```
+
+Dla wszystkich pięciu analizowanych krajów p-value testu Grangera jest mniejsze niż zadany poziom istotności 5%, więc odrzucono hipotezę zerową o braku przyczynowości. Można więc stwierdzić, że giełdy wyżej wymienionych krajów są przyczyną w sensie Grangera zmian wartości indeksów na wszystkich pięciu badanych giełdach.
+
+
